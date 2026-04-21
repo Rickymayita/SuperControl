@@ -135,7 +135,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#f5f5f5",
   },
   title: { fontSize: 28, fontWeight: "bold", marginBottom: 10, color: "#333" },
-  status: { fontSize: 16, marginBottom: 30, color: "#666" },
+  status: { fontSize: 26, marginBottom: 30, color: "#666" },
   button: {
     padding: 20,
     borderRadius: 20,
