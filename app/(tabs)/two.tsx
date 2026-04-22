@@ -2,12 +2,29 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "@react-navigation/native";
 import { differenceInMinutes, format } from "date-fns";
 import React, { useCallback, useState } from "react";
-import { FlatList, StyleSheet, Text, View } from "react-native";
+import {
+  Alert,
+  FlatList,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
 
 export default function HistorialScreen() {
   const [registros, setRegistros] = useState([]);
 
-  // 1. Cargar datos cada vez que la pestaña toma el foco
+  // Estados para la edición
+  const [modalVisible, setModalVisible] = useState(false);
+  const [registroAEditar, setRegistroAEditar] = useState(null);
+  const [nuevoBalance, setNuevoBalance] = useState("");
+  const [horaEntrada, setHoraEntrada] = useState("");
+  const [horaSalida, setHoraSalida] = useState("");
+
   useFocusEffect(
     useCallback(() => {
       const cargarHistorial = async () => {
@@ -18,60 +35,98 @@ export default function HistorialScreen() {
     }, []),
   );
 
-  // --- LÓGICA DE CÁLCULOS GLOBALES ---
+  // --- LÓGICA DE CÁLCULOS ---
   const totalCaja = registros.reduce((acc, curr) => acc + curr.balance, 0);
-
   const totalMinutosExtra = registros.reduce((acc, item) => {
-    const minutosTrabajados = differenceInMinutes(
+    const minutos = differenceInMinutes(
       new Date(item.salida),
       new Date(item.entrada),
     );
-    const extra = minutosTrabajados - 480; // 8 horas base
+    const extra = minutos - 480;
     return extra > 0 ? acc + extra : acc;
   }, 0);
 
   const horasTotalesExtra = Math.floor(totalMinutosExtra / 60);
   const minutosRestantesExtra = totalMinutosExtra % 60;
 
-  // --- FUNCIONES DE APOYO ---
-  const calcularExtrasIndividuales = (entrada, salida) => {
-    const minutos = differenceInMinutes(new Date(salida), new Date(entrada));
-    const extra = minutos - 480;
-    if (extra <= 0) return null;
-    const h = Math.floor(extra / 60);
-    const m = extra % 60;
-    return `${h}h ${m}m extra`;
+  // --- FUNCIONES DE ACCIÓN ---
+  const borrarRegistro = (id) => {
+    Alert.alert("Borrar", "¿Eliminar este turno?", [
+      { text: "Cancelar", style: "cancel" },
+      {
+        text: "Borrar",
+        style: "destructive",
+        onPress: async () => {
+          const nuevaLista = registros.filter((item) => item.id !== id);
+          setRegistros(nuevaLista);
+          await AsyncStorage.setItem(
+            "@historial_turnos",
+            JSON.stringify(nuevaLista),
+          );
+        },
+      },
+    ]);
+  };
+
+  const abrirEditor = (item) => {
+    setRegistroAEditar(item);
+    setNuevoBalance(item.balance.toString());
+    setHoraEntrada(format(new Date(item.entrada), "HH:mm"));
+    setHoraSalida(format(new Date(item.salida), "HH:mm"));
+    setModalVisible(true);
+  };
+
+  const guardarEdicion = async () => {
+    const nuevaLista = registros.map((item) => {
+      if (item.id === registroAEditar.id) {
+        // Función para mezclar fecha vieja con hora nueva
+        const actualizarFecha = (fechaOriginal, nuevaHoraPrev) => {
+          const [horas, minutos] = nuevaHoraPrev.split(":");
+          const d = new Date(fechaOriginal);
+          d.setHours(parseInt(horas), parseInt(minutos));
+          return d.toISOString();
+        };
+
+        return {
+          ...item,
+          balance: parseFloat(nuevoBalance) || 0,
+          entrada: actualizarFecha(item.entrada, horaEntrada),
+          salida: actualizarFecha(item.salida, horaSalida),
+        };
+      }
+      return item;
+    });
+
+    setRegistros(nuevaLista);
+    await AsyncStorage.setItem("@historial_turnos", JSON.stringify(nuevaLista));
+    setModalVisible(false);
   };
 
   const renderItem = ({ item }) => {
-    const extrasIndividuales = calcularExtrasIndividuales(
-      item.entrada,
-      item.salida,
-    );
-    const esSobrante = item.balance > 0;
     const esFaltante = item.balance < 0;
-    const balanceTexto = esSobrante
-      ? "Sobrante"
-      : esFaltante
-        ? "Faltante"
-        : "Exacto";
-
+    const minutosTurno = differenceInMinutes(
+      new Date(item.salida),
+      new Date(item.entrada),
+    );
+    const extraActual = minutosTurno - 480; // 480 min = 8 horas
     return (
       <View style={styles.card}>
         <View style={styles.cardHeader}>
-          <Text style={styles.fechaText}>{item.fecha}</Text>
+          <View>
+            <Text style={styles.fechaText}>{item.fecha}</Text>
+          </View>
+          <View>
+            {extraActual > 0 && (
+              <Text style={styles.extraBadgeText}>
+                +{Math.floor(extraActual / 60)}h {extraActual % 60}m extra
+              </Text>
+            )}
+          </View>
           <View style={styles.balanceContainer}>
-            <Text style={styles.balanceLabel}>{balanceTexto}</Text>
             <Text
               style={[
                 styles.balanceText,
-                {
-                  color: esFaltante
-                    ? "#FF3B30"
-                    : esSobrante
-                      ? "#34C759"
-                      : "#8E8E93",
-                },
+                { color: esFaltante ? "#FF3B30" : "#34C759" },
               ]}
             >
               $ {Math.abs(item.balance).toFixed(2)}
@@ -84,9 +139,20 @@ export default function HistorialScreen() {
             {format(new Date(item.entrada), "HH:mm")} -{" "}
             {format(new Date(item.salida), "HH:mm")}
           </Text>
-          {extrasIndividuales && (
-            <Text style={styles.extraBadge}>{extrasIndividuales}</Text>
-          )}
+          <View style={styles.accionesContainer}>
+            <TouchableOpacity
+              onPress={() => abrirEditor(item)}
+              style={styles.btnAccion}
+            >
+              <Text style={styles.btnEditText}>Editar</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => borrarRegistro(item.id)}
+              style={styles.btnAccion}
+            >
+              <Text style={styles.btnBorrarText}>Borrar</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
     );
@@ -96,7 +162,6 @@ export default function HistorialScreen() {
     <View style={styles.container}>
       <Text style={styles.title}>Historial de Turnos</Text>
 
-      {/* TABLERO DE RESUMEN GLOBAL */}
       <View style={styles.resumenGlobal}>
         <View style={styles.resumenItem}>
           <Text style={styles.resumenLabel}>Balance Total</Text>
@@ -109,9 +174,7 @@ export default function HistorialScreen() {
             $ {totalCaja.toFixed(2)}
           </Text>
         </View>
-
         <View style={styles.divisorVertical} />
-
         <View style={styles.resumenItem}>
           <Text style={styles.resumenLabel}>Total Extras</Text>
           <Text style={[styles.resumenValor, { color: "#5856D6" }]}>
@@ -124,11 +187,71 @@ export default function HistorialScreen() {
         data={registros}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
-        contentContainerStyle={{ paddingBottom: 20 }}
-        ListEmptyComponent={
-          <Text style={styles.empty}>Aún no hay registros guardados.</Text>
-        }
       />
+
+      {/* --- MODAL DE EDICIÓN --- */}
+      {/* --- MODAL DE EDICIÓN --- */}
+      <Modal visible={modalVisible} transparent={true} animationType="fade">
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={{ width: "100%", alignItems: "center" }}
+          >
+            {/* El contenido VA ADENTRO del KeyboardAvoidingView */}
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Editar Registro</Text>
+
+              <Text style={styles.inputLabel}>Balance de Caja</Text>
+              <TextInput
+                style={styles.modalInput}
+                keyboardType="numeric"
+                value={nuevoBalance}
+                onChangeText={setNuevoBalance}
+                placeholderTextColor={"#999"}
+              />
+
+              <View style={styles.row}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>Entrada (HH:mm)</Text>
+                  <TextInput
+                    style={styles.modalInput}
+                    value={horaEntrada}
+                    onChangeText={setHoraEntrada}
+                    placeholder="08:00"
+                    placeholderTextColor={"#999"}
+                  />
+                </View>
+                <View style={{ width: 20 }} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>Salida (HH:mm)</Text>
+                  <TextInput
+                    style={styles.modalInput}
+                    value={horaSalida}
+                    onChangeText={setHoraSalida}
+                    placeholder="16:00"
+                    placeholderTextColor={"#999"}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  onPress={() => setModalVisible(false)}
+                  style={[styles.btnModal, styles.btnCancel]}
+                >
+                  <Text style={styles.textCancel}>Cancelar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={guardarEdicion}
+                  style={[styles.btnModal, styles.btnSave]}
+                >
+                  <Text style={styles.textSave}>Guardar</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -140,19 +263,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 60,
   },
-  title: { fontSize: 24, fontWeight: "bold", marginBottom: 20, color: "#333" },
+  title: { fontSize: 24, fontWeight: "bold", marginBottom: 20 },
   resumenGlobal: {
     backgroundColor: "#fff",
     flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-around",
     paddingVertical: 20,
     borderRadius: 15,
     elevation: 4,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
     marginBottom: 25,
   },
   resumenItem: { alignItems: "center", flex: 1 },
@@ -161,7 +278,6 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     color: "#8E8E93",
     fontWeight: "700",
-    marginBottom: 5,
   },
   resumenValor: { fontSize: 20, fontWeight: "bold" },
   divisorVertical: { width: 1, height: "60%", backgroundColor: "#eee" },
@@ -177,32 +293,95 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 10,
   },
-  fechaText: { fontSize: 16, fontWeight: "600", color: "#444" },
+  extraBadgeText: { fontSize: 16, fontWeight: "600" },
+  fechaText: { fontSize: 16, fontWeight: "600" },
   balanceContainer: { alignItems: "flex-end" },
-  balanceLabel: {
-    fontSize: 9,
-    textTransform: "uppercase",
-    color: "#999",
-    fontWeight: "700",
-  },
   balanceText: { fontSize: 18, fontWeight: "bold" },
   cardFooter: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    paddingTop: 10,
     borderTopWidth: 1,
     borderTopColor: "#f0f0f0",
-    paddingTop: 10,
   },
   horaText: { fontSize: 14, color: "#666" },
-  extraBadge: {
-    backgroundColor: "#E8F2FF",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    fontSize: 12,
-    fontWeight: "bold",
-    color: "#007AFF",
+  accionesContainer: { flexDirection: "row", gap: 10 },
+  btnAccion: { padding: 6, backgroundColor: "#f9f9f9", borderRadius: 8 },
+  btnEditText: { color: "#007AFF", fontWeight: "600" },
+  btnBorrarText: { color: "#FF3B30", fontWeight: "600" },
+
+  // Estilos del Modal
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
   },
-  empty: { textAlign: "center", marginTop: 40, color: "#999" },
+  modalContent: {
+    width: "90%",
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    padding: 20,
+    elevation: 10,
+    maxHeight: "90%", // Un poco más de margen para scroll
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: "bold",
+    marginBottom: 20, // Más espacio para que no choque con el primer label
+    color: "#333",
+  },
+  inputLabel: {
+    // ESTILO NUEVO: Para los títulos chiquitos arriba de cada input
+    fontSize: 11,
+    textTransform: "uppercase",
+    color: "#8E8E93",
+    fontWeight: "700",
+    marginBottom: 5,
+  },
+  modalInput: {
+    borderBottomWidth: 2,
+    borderColor: "#007AFF",
+    fontSize: 18, // Bajamos de 22 a 18 para que no sea tan "pesado" visualmente
+    padding: 10,
+    marginBottom: 20,
+    textAlign: "center",
+    color: "#333",
+    backgroundColor: "#f9f9f9", // Un fondo leve para que se note el área de contacto
+    borderRadius: 8,
+  },
+  row: {
+    // ESTILO NUEVO: Para alinear Entrada y Salida
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  modalButtons: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 20,
+    width: "100%",
+    gap: 10,
+  },
+  btnModal: {
+    flex: 1,
+    paddingVertical: 15,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 40,
+  },
+  btnCancel: {
+    marginRight: 10,
+    backgroundColor: "#f5f5f5",
+  },
+  btnSave: {
+    backgroundColor: "#007AFF",
+  },
+  textCancel: { color: "#666", fontWeight: "bold" },
+  textSave: { color: "#fff", fontWeight: "bold" },
+
+  // Reutilizamos el estilo del balance que ya tenías
+  balanceText: { fontSize: 18, fontWeight: "bold" },
 });
